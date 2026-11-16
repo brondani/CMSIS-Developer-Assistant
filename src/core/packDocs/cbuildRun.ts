@@ -66,6 +66,7 @@ export interface CbuildRunInfo {
  */
 export interface ActiveContextHint {
     solution?: string;
+    solutionFile?: string;
     targetType?: string;
 }
 

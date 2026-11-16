@@ -80,10 +80,11 @@ export function registerBuildInfoTools(mcpServer: McpServer, dispatch: PackDocsD
 
     mcpServer.registerTool('get_build_diagnostics', {
         description: 'Errors and warnings of the newest build log (GCC/Clang/armclang/armlink/CMake/ninja/cbuild) with file:line, and the final build status. ' +
-            'Logs come from the diagnostic re-run of cmsis_action build; pass file for one saved elsewhere.',
+            'Managed builds use their original retained log; older extensions use a diagnostic re-run. Pass operationId for a retained build or file for a workspace log.',
         annotations: readOnly,
         inputSchema: {
             file: z.string().optional().describe('Log file to read instead of the newest found'),
+            operationId: z.string().optional().describe('Retained managed build ID; mutually exclusive with file.'),
             limit: z.number().int().min(1).max(200).optional().describe('Diagnostics to list (default 20)'),
             maxChars: z.number().int().min(500).max(60_000).optional().describe('Text budget (default 12000)'),
             ...targetShape,

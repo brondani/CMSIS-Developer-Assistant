@@ -105,6 +105,7 @@ import { BuildLogSummary, parseBuildLog, readBuildLog } from './core/buildInfo/b
 import { renderBuildFailure } from './core/buildInfo/render';
 import { BUILD_TASK_KINDS, BuildCheck, BuildMessage, isBuildAction, Job, JobDiagnosis, JobExecution, MAX_BUILD_MESSAGES } from './core/cmsisTasks';
 import { knownMessageLines } from './core/knowledge/knownMessageLookup';
+import { managedBuilds } from './core/managedBuilds';
 import { activeTargetSetOf, solutionFileOf } from './core/solutionAnswers';
 import { formatDuration } from './handler/jobText';
 import { logger } from './utils/logger';
@@ -394,6 +395,7 @@ export function diagnosisOf(report: BuildFailureReport, solutionDir: string | un
  */
 export class BuildDiagnosisRunner {
     private readonly running = new Set<RunningRerun>();
+    private readonly managedExecutions = new Set<number>();
     /** The images each clean found at its start, by execution key. */
     private readonly cleanSnapshots = new Map<number, CleanSnapshot>();
     /** When each image of a build or rebuild was written last, as its start found them, by execution key. */
@@ -409,7 +411,10 @@ export class BuildDiagnosisRunner {
      */
     onFinished(job: Job): void {
         const decided = job.executions.find((execution) => execution.key === job.decidedBy);
-        if (!isBuildAction(job.action) || !decided || decided.exitCode === undefined) {
+        if (!isBuildAction(job.action) || !decided) {
+            return;
+        }
+        if (this.managedExecutions.delete(decided.key) || decided.exitCode === undefined) {
             return;
         }
         const snapshot = this.cleanSnapshots.get(decided.key);
@@ -432,6 +437,11 @@ export class BuildDiagnosisRunner {
      * check counts only an image written since.
      */
     onStarted(execution: LiveExecution): void {
+        // V3 owns the result and original log; task events must not start legacy verification or a rerun.
+        if (BUILD_TASK_KINDS.has(execution.kind) && managedBuilds.pending()) {
+            this.managedExecutions.add(execution.key);
+            return;
+        }
         if (execution.kind === 'build' || execution.kind === 'rebuild') {
             this.noteImageStamps(execution.key);
             return;
@@ -564,6 +574,7 @@ export class BuildDiagnosisRunner {
             rerun.stop('disposed');
         }
         this.cleanSnapshots.clear();
+        this.managedExecutions.clear();
     }
 
     private async collect(decided: JobExecution): Promise<JobDiagnosis> {

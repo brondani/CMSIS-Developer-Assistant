@@ -1,0 +1,9 @@
+﻿# Copyright 2026 Arm Limited
+# SPDX-License-Identifier: Apache-2.0
+project:
+  output:
+    type: lib
+  groups:
+    - group: Source
+      files:
+        - file: managed-build.c

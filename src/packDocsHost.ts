@@ -32,7 +32,7 @@ import { defaultPackRoot, resolveUserDocsDir } from './core/packDocs';
 import { effectivePackRoot } from './core/packDocs/host';
 import { ActiveContextHint, formatPackId } from './core/packDocs/cbuildRun';
 import { namedPackFolders } from './core/packDocs/targetDocs';
-import { solutionNameOf, targetTypeOf } from './core/solutionAnswers';
+import { solutionFileOf, solutionNameOf, targetTypeOf } from './core/solutionAnswers';
 import { withTimeout } from './utils/timeout';
 import { toolchainPackRoot } from './utils/toolchainPackRoot';
 import { activeCbuildRunFile, activePackFolders } from './utils/solutionQueries';
@@ -131,7 +131,7 @@ async function activeContext(): Promise<ActiveContextHint | undefined> {
         ]);
         const solution = solutionNameOf(file);
         const targetType = targetTypeOf(set);
-        return solution || targetType ? { solution, targetType } : undefined;
+        return solution || targetType ? { solution, solutionFile: solutionFileOf(file), targetType } : undefined;
     } catch {
         return undefined;
     }

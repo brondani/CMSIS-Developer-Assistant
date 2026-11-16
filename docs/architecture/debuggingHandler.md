@@ -54,7 +54,9 @@ The first two groups run inside `fenced()` (`src/handler/fence.ts`); its
 `timeoutMs`, at most 60 s, or 30 s when none is given. `cmsis_action` and
 `flash` may wait up to 600 s (#12); they default to 60 s and count one
 deadline from the call, so they answer before their fence, which stays as a
-backstop with advice of its own. The timer starts before the work; when it
+backstop with advice of its own. Managed-build waits normally return `running`
+with `operationId` before that fence; their result remains in the window registry.
+The timer starts before the work; when it
 fires, the work keeps running, since a DAP request cannot be withdrawn, and
 whatever it produces later, a rejection included, is dropped.
 
@@ -329,13 +331,14 @@ it). Other adapters take breakpoint changes while their target runs.
 
 ## CMSIS actions and flashing
 
-`src/handler/cmsisAction.ts` runs `cmsis_action`. Each action maps to a
-command of the CMSIS Solution extension (`cmsis-csolution.build`,
-`cmsis-csolution.cmsisLoadAndDebug` and so on). Those commands return before
-their work is done, so the outcome is observed separately, through the
-window's CMSIS job tracker (next section):
+`src/handler/cmsisAction.ts` runs `cmsis_action`. Standalone `build`,
+`rebuild` and `clean` prefer CMSIS Solution's managed API V3; their result
+belongs to an operation, not a VS Code task (see below). Older extensions
+without V3 retain the task backend. Other actions map to CMSIS Solution
+commands (`cmsis-csolution.cmsisLoadAndDebug` and so on), whose work is
+observed separately through the window's CMSIS job tracker:
 
-- `build`, `load`, `erase`, `run` and `load_and_run` arm a job, issue the
+- Legacy `build`, plus `load`, `erase`, `run` and `load_and_run`, arm a job, issue the
   command and wait for the job: a ✅ line with the task, its exit code, how
   long it ran and the job id, or a ❌ line rejected as `TASK_FAILED`. `run`
   (#73) starts the adapter's `CMSIS Run` task alone, job id `g-<n>`; its
@@ -379,7 +382,10 @@ window's CMSIS job tracker (next section):
   the attach goes ahead, since a server started outside the window may
   listen, and GDB's own connect decides; a reply still `running` then says
   what happens when none does.
-- `status` launches nothing and needs no solution: it waits for the job in
+- `status` launches nothing: an explicit managed `operationId` selects that
+  operation without requiring an active solution; otherwise a pending managed
+  operation, then the active solution/target's latest retained operation, takes
+  precedence. With no such operation it waits for the legacy job in
   flight, or lists the recent results and the live CMSIS tasks, with the
   error lines of a failed build once they are in. A Load or Erase task alive
   for `LONG_FLASH_MS` (2 min, `src/handler/jobText.ts`) is stuck, not
@@ -398,7 +404,10 @@ window's CMSIS job tracker (next section):
   not its tasks, but CMSIS Solution's Stop Running can end one: the reply
   names a build that ended during the wait
   and one that runs on, which `stop_build` ends. `detach` returns at once.
-- `stop_build` does the same for the build-type tasks of the window (build,
+- For a managed operation, `stop_build` requests cancellation and waits for
+  its settled result; it never terminates unrelated tasks or switches targets.
+  Without a managed operation or explicit ID, it does the same as `stop_run`
+  for the build-type tasks of the window (build,
   rebuild, clean, or the `cbuild setup` CMSIS Solution runs after loading a
   solution), over `cmsis-csolution.stopBuild`, which ends only one of them.
   It marks their jobs first (`CmsisJobTracker.requestStop`), so they read as
@@ -693,8 +702,48 @@ it is open and may need reopening, or why it went during programming (#49).
 They do not release the port first: nothing ties a COM port to the probe
 being programmed, and a second board's UART would go too.
 
+## Managed builds (API V3)
+
+`src/handler/managedBuild.ts` feature-detects `getApi(3)` and caches the API
+per extension exports object; owned API instances are disposed at deactivation.
+`build`, `rebuild` and `clean` submit once with the corresponding flags, without
+pack downloads or RTE updates. Only an unavailable V3 API selects the old task
+backend. An invalid operation or a rejected result after submission never
+triggers a replacement build, a legacy fallback or a diagnostic rerun.
+
+The operation's result is authoritative: `success`, `failed`, `cancelled` or
+`skipped`, with its optional real exit code and original log URI/path. Neither
+VS Code task events, output text nor image timestamps override it. A genuine
+no-op can succeed without changing an image. `skipped` is a discarded queued
+duplicate, not success and not another operation's result. Result rejection is
+reported separately as infrastructure/logging failure.
+
+`src/core/managedBuilds.ts` owns each operation in the window, independently of
+MCP sessions and wait deadlines. A timed-out wait returns `running` plus
+`operationId`; settlement, output capture and problem-journal diagnostics
+continue. The same pending request joins it; a different build or another
+CMSIS action is refused while it remains pending. `status` and `stop_build`
+accept that ID. A cancellation request is sent at most once and does not decide
+the outcome: natural success or failure can win the race. Stopping an already
+settled operation simply returns its result.
+
+Pending entries remain until settlement. Completed entries are retained for
+30 minutes, with a limit of 32 completions; a window reload loses all IDs.
+An unknown/expired explicit ID is `INVALID_ARGUMENT`, never a fallback to a
+new build, a task or the newest log. The registry is window-local, so callers
+must keep `status`, `stop_build` and diagnostics routed to the owning window;
+an operation ID is not a cross-window discovery mechanism.
+
+Replies use a bounded tail of the original saved log, recovering output emitted
+before the listener attached. Until a result supplies the log, or when that log
+is unavailable, retained live output is used. Log parsing supplies diagnostics,
+not the verdict; missing or unreadable logs must not hide a settled result.
+`get_build_diagnostics` can read that same retained log by ID, including outside
+the workspace, without rebuilding (see [packDocs.md](packDocs.md)).
+
 ## CMSIS jobs
 
+These jobs report legacy builds and the other task-based actions.
 The CMSIS Solution extension runs builds as its own task type and the
 panel's Load, Run, Load+Run and Erase as tasks it writes into `tasks.json`.
 `src/core/cmsisTasks.ts` knows those shapes: `classifyCmsisTask()` names a
@@ -738,9 +787,9 @@ out of it, and a job still going when it passes is answered with status
 
 ### Why a build failed
 
-The CMSIS Solution extension runs cbuild in a pseudoterminal no other
-extension can read and keeps no log, so a failed build job knows only its
-exit code. `src/cmsisBuildDiagnosis.ts` completes such a job's result
+This path applies only to the fallback for older extensions without managed
+API V3. Their cbuild pseudoterminal supplies no readable original log, so a
+failed build job knows only its exit code. `src/cmsisBuildDiagnosis.ts` completes such a job's result
 (#15); a rebuild is treated as a build. The tracker calls its `onDidFinishJob` listener before it wakes the
 job's waiters, and `completeWith` makes them wait for the work as well: the
 job carries a pending `diagnosis` until it is done.
@@ -754,8 +803,8 @@ job carries a pending `diagnosis` until it is done.
   Solution recorded in `.cmsis/tools-environment.yml`. Its log is parsed
   with the parser of `get_build_diagnostics`. The re-run starts only while
   no other build or setup runs, is killed when one starts or after 120 s,
-  and can be switched off (`build.diagnosticRerun`). It is interim, until
-  CMSIS Solution offers a build log of its own (#21).
+  and can be switched off (`build.diagnosticRerun`). Managed V3 operations
+  supply their original log instead; this setting has no effect on them.
 
 The same machinery checks a build whose task exited 0. CMSIS Solution
 1.70.1 cannot report a failed build: its build runner drops the exit code
@@ -979,6 +1028,7 @@ by #56.
 | `src/windowProblems.ts` | the output-channel mirror (`mirrorProblem()`, debug level), the `logger.error` sink, "Copy Recent Problems", failed jobs and build lines, the Problems panel |
 | `src/handler/targetText.ts` | register normalisation, register table, memory dump, cycle-counter text |
 | `src/handler/cmsisAction.ts` | `cmsis_action`: commands, probe guard, target switch, label pre-check and the Update Debug Tasks hand-off, jobs, session waits, verified `stop_run` and `stop_build`, `status`, `open_solution`, the dispatch of `install_pack` and `create_solution`, why no solution is active |
+| `src/handler/managedBuild.ts`, `src/core/managedBuilds.ts` | API V3 acquisition, single submission, authoritative replies and original-log tails; window-local retained operations, waits and cancellation |
 | `src/handler/installPack.ts`, `src/core/packInstall.ts` | `install_pack`: the pack id, the licence gate, the install in flight, the folder check, the knowledge line; `PackInstallHost` |
 | `src/core/solutionApi.ts`, `src/core/catalogQuery.ts`, `src/core/webCatalog.ts` | CMSIS Solution's API version 2 as far as it is used, `acquireSolutionApi()`, the lookups by id, `catalogErrorsOf()`; `cmsis_query`'s kinds, filters, caps, texts and data; the origin pack of web examples alike, from Arm's web catalog |
 | `src/handler/createSolution.ts` | `cmsis_action create_solution`: the folder, the window check, the lookups, `createNewSolution`, the text of what follows |
@@ -987,7 +1037,7 @@ by #56.
 | `src/handler/jobText.ts` | job results, `running` replies, `status`, `PROBE_BUSY` refusals, the `get_session_status` task line; `flashFailedHint()` by the task's program |
 | `src/core/programLookup.ts`, `src/handler/taskProgram.ts` | The kind of a task's program, the PATH of the CMSIS tasks and VS Code's, the lookup and the SEGGER folders; `failedTaskProgram()`, `gdbServerMissingHint()` |
 | `src/cmsisJobTracker.ts` | `CmsisJobTracker`: live CMSIS executions, jobs, probe owners, the label pre-check, work that completes a settled job; the window's instance |
-| `src/cmsisBuildDiagnosis.ts` | The error lines of a failed build or rebuild: csolution's index, the diagnostic re-run of cbuild and its guards (#15); the check of a build that exited 0, and of a clean |
+| `src/cmsisBuildDiagnosis.ts` | Legacy-only diagnosis and artefact verification for older extensions without V3. The error lines of a failed build or rebuild: csolution's index, the diagnostic re-run of cbuild and its guards (#15); the check of a build that exited 0, and of a clean |
 | `src/core/buildFailure.ts` | The readers of `cbuild-idx.yml` and `tools-environment.yml`, the re-run's arguments and environment, the reasons for no re-run; `renderBuildFailure()` is in `src/core/buildInfo/render.ts` |
 | `src/core/cmsisTasks.ts` | task classifier, `reduceJob()`, `guardProbe()` |
 | `src/core/gdbServerPorts.ts`, `src/core/gdbPortGuard.ts` | The GDB port of a launch configuration, a session and a CMSIS Run task, the claims a window publishes; who holds a port (the other windows' claims, the bind test) and the `PROBE_BUSY` refusal |
@@ -996,6 +1046,14 @@ by #56.
 
 ## Tests
 
+- `src/test/managedBuilds.test.ts`: retained waits, result rejection, cancellation
+  races, skipped results, retention and API fallback; original-log tails and
+  problem-journal diagnostics
+- `test/managed-build/`: opt-in, hardware-free integration against an installed
+  V3-capable CMSIS Solution in an isolated extension host, including the actual
+  CDA adapter; see its [run instructions](../../test/managed-build/README.md).
+  The separate concurrent-duplicate probe exposes unresolved upstream operation/
+  task identity problems and is not part of the passing integration claim.
 - `src/test/debuggingHandler.test.ts`: the handler against a scripted
   executor and host, CMSIS jobs over fake task events included; a picker
   nobody answers and a stop that never settles (#14)

@@ -48,6 +48,7 @@ import { serialController } from './core/serialController';
 import { serialMonitorBridge } from './core/serialMonitorBridge';
 import { clearSvdCache } from './core/svdParser';
 import { SERVER_VERSION } from './debuggingExecutor';
+import { disposeManagedBuildApis } from './handler/managedBuild';
 import { registerPackDocsCommands } from './packDocsCommands';
 import type { PackDocsHandlers } from './packDocsDispatch';
 import { createPackDocsHandlers, readPackDocsGates } from './packDocsHost';
@@ -333,6 +334,7 @@ export async function activate(extensionContext: vscode.ExtensionContext): Promi
 }
 
 export async function deactivate(): Promise<void> {
+    disposeManagedBuildApis();
     logger.info(`${PRODUCT} is deactivating`);
     const leaving = windowCoordinator;
     if (leaving) {

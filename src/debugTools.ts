@@ -248,9 +248,9 @@ const ABOUT = {
         'Stopping its monitor there frees the port for serial_capture.',
     ),
     cmsis_action: say(
-        'Drives CMSIS Solution on the active csolution target like its panel buttons; each result names its target.',
-        'build / rebuild / clean / load / erase / load_and_run wait for their task: ✅ or ❌ plus the exit code.',
-        'A task still running at the wait returns status running: call status, never start it again.',
+        'CMSIS Solution actions on the active target, named in each result.',
+        'build / rebuild / clean use managed V3 results when available; otherwise task exit codes.',
+        'A running result means call status, not build again.',
         'run: CMSIS Run alone, no build or flash — a probe\'s GDB server, then attach; an FVP hosts none.',
         'load_and_debug (flash + debug) and attach return the session state; stop_run / stop_build wait for the tasks.',
         'refresh: Update RTE ("use --update-rte"); activate_environment: re-resolve vcpkg-configuration.json.',
@@ -811,6 +811,7 @@ function registerTools(mcp: McpServer, handlers: SessionHandlers, parts: Session
             device: z.string().optional(),
             draft: z.string().optional().describe('create_solution: example or template; it, board and device are ids from cmsis_query'),
             git: z.boolean().optional().describe('create_solution: git init, default off'),
+            operationId: z.string().optional().describe('status / stop_build: retained managed operation ID (32 completions, 30 min, until reload).'),
             target: z.string().optional().describe('Target-type or type@set from the csolution (e.g. "MPS3", "HP@debug"). ' +
                 'Switched and verified when it differs from the active one; omit to use the panel selection.'),
             timeoutMs: z.number().int().min(100).max(600_000).optional()

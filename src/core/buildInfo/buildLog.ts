@@ -25,6 +25,7 @@
  */
 
 import * as fs from 'fs';
+import { stripVTControlCharacters } from 'util';
 
 export type Severity = 'error' | 'warning' | 'note';
 
@@ -37,7 +38,7 @@ export interface Diagnostic {
     code?: string;
     message: string;
     tool: 'compiler' | 'linker' | 'cmake' | 'ninja' | 'cbuild';
-    /** 1-based line in the log. */
+    /** 1-based logical line after terminal control and wrap normalization. */
     logLine: number;
     /** Occurrences folded into this entry. */
     count: number;
@@ -63,7 +64,12 @@ export interface BuildLogSummary {
     ok?: boolean;
 }
 
-const ANSI = /\x1b\[[0-9;]*[A-Za-z]/g;
+/** Undo ConPTY's wrapped-line repaint before stripping terminal controls; leave the original log untouched. */
+function diagnosticText(text: string): string {
+    const repaint = /([^\r\n])\x1b\[(\d+);1H(?:\x1b\[[0-?]*[ -/]*[@-~])*\r?\n(?:\x1b\[(?!\d+;\d+H)[0-?]*[ -/]*[@-~])*\x1b\[(\d+);(\d+)H/g;
+    return stripVTControlCharacters(text.replace(repaint, (match: string, _last: string, nextRow: string, row: string, column: string) =>
+        Number(nextRow) === Number(row) + 1 && Number(column) > 1 ? '' : match));
+}
 
 function sev(word: string): Severity {
     const w = word.toLowerCase();
@@ -89,7 +95,7 @@ export function shortPath(p: string): string {
 }
 
 export function parseBuildLog(text: string, file: string, stat?: { size: number; mtimeMs: number }): BuildLogSummary {
-    const lines = text.replace(ANSI, '').split(/\r?\n/);
+    const lines = diagnosticText(text).split(/\r?\n/);
     const summary: BuildLogSummary = {
         file, sizeBytes: stat?.size ?? Buffer.byteLength(text), mtimeMs: stat?.mtimeMs ?? 0, lines: lines.length,
         errors: 0, warnings: 0, notes: 0, diagnostics: [], failedSteps: [], contexts: [],

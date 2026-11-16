@@ -23,6 +23,7 @@ import { attachBuildDiagnosis, DiagnosisHost, DiagnosticChild, DiagnosticSpawnOp
 import { CmsisJobTracker } from '../cmsisJobTracker';
 import { DIAGNOSTIC_RERUN_CAP_MS } from '../core/buildFailure';
 import { BUILD_STOPPED_EXIT_CODE, type Job, type JobAction } from '../core/cmsisTasks';
+import { managedBuilds, type ManagedBuildResult } from '../core/managedBuilds';
 import { idleStatus, jobResult } from '../handler/jobText';
 import { ToolError } from '../core/toolResult';
 import { FakeExecution, FakeTasks, FixtureTask, ManualClock } from './cmsisTaskFixtures';
@@ -258,6 +259,30 @@ function resultError(job: Job, now: number): ToolError {
 }
 
 suite('build diagnosis (#15)', () => {
+    test('managed tasks bypass legacy reruns and unchanged-image checks', async () => {
+        const w = world();
+        let finish!: (result: ManagedBuildResult) => void;
+        const entry = managedBuilds.register({
+            id: 'diagnosis-managed-build',
+            result: new Promise<ManagedBuildResult>((resolve) => { finish = resolve; }),
+            cancel: () => {},
+            onOutput: () => ({ dispose: () => {} }),
+        }, { action: 'build', solution: w.solution, target: 'MPS3' });
+        try {
+            builtLayout(w, { ageMs: 60_000 });
+            const failed = failBuild(w).job;
+            const unchanged = passBuild(w).job;
+            await new Promise<void>((resolve) => setImmediate(resolve));
+            assert.strictEqual(w.children.length, 0);
+            assert.strictEqual(w.tracker.job(failed.id)?.diagnosis, undefined);
+            assert.strictEqual(w.tracker.job(unchanged.id)?.diagnosis, undefined);
+        } finally {
+            finish({ status: 'cancelled', logFile: { fsPath: '', toString: () => '' } });
+            await entry.settled;
+            w.dispose();
+        }
+    });
+
     let current: World | undefined;
     teardown(() => {
         current?.dispose();

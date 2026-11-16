@@ -145,7 +145,7 @@ interface RegisterLookup { peripheral: string; register: string; svdFile?: strin
 interface StackRequest { threadId?: number; levels?: number; timeoutMs?: number }
 interface FrameValuesRequest { frameId: number; scope?: VariableScope; variableNames?: string[]; timeoutMs?: number }
 interface CmsisRequest {
-    action: CmsisAction; target?: string; timeoutMs?: number; path?: string; client?: string;
+    action: CmsisAction; target?: string; timeoutMs?: number; path?: string; client?: string; operationId?: string;
     /** install_pack: the Vendor::Name@version to install. */
     pack?: string;
     /** create_solution: the board, device and draft ids from cmsis_query, and whether to run git init. */
@@ -2102,7 +2102,7 @@ export class DebuggingHandler
             awaitLiveSession: (overrideMs) => this.awaitLiveSession(overrideMs, true),
             renderFullState: (state) => this.fullState(state),
             journal: this.journal,
-        }, args.action, args.target, waitMs, args.path, args.client, args.pack, args), { capMs: LONG_LIMIT_CAP_MS, advice: CMSIS_FENCE_ADVICE });
+        }, args.action, args.target, waitMs, args.path, args.client, args.pack, args, args.operationId), { capMs: LONG_LIMIT_CAP_MS, advice: CMSIS_FENCE_ADVICE });
         return PROGRAMMING_ACTIONS.has(args.action) ? this.noteHeldSerialPort(run) : run();
     }
 

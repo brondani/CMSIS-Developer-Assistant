@@ -29,8 +29,11 @@ import {
     isInsideAny, looksLikeBuildLog, outputSectionAt, parseMapFile, prefixedLog, readBuildLog, readElf, regionsFor, renderArtifacts, renderDiagnostics,
     renderLayout, renderLookup, renderNoBuild, renderNoLog, renderUsage, resolveBuildContext, sectionAt, symbolAt, topSymbols, uncoveredRanges, usageRegions,
 } from './core/buildInfo';
-import type { ToolText } from './core/toolResult';
+import { managedBuilds } from './core/managedBuilds';
+import { activeContextOf } from './core/packDocs/cbuildRun';
+import { ToolError, type ToolText } from './core/toolResult';
 import { runTool } from './core/toolRun';
+import { managedBuildReply, requireManagedBuild } from './handler/managedBuild';
 
 export interface BuildInfoHandlerOptions {
     /** Default per-call timeout. */
@@ -63,6 +66,7 @@ export interface LayoutArgs extends BuildTargetArgs {
 }
 
 export interface DiagnosticsArgs extends BuildTargetArgs {
+    operationId?: string;
     /** A log file to read instead of the newest one found by the settings' globs. */
     file?: string;
     limit?: number;
@@ -191,6 +195,26 @@ export class BuildInfoHandler {
 
     public handleGetBuildDiagnostics(args: DiagnosticsArgs): Promise<ToolText> {
         return this.run('get_build_diagnostics', args, async (log) => {
+            if (args.operationId && args.file) {
+                throw new ToolError('INVALID_ARGUMENT', 'Use operationId or file, not both.');
+            }
+            const active = !args.operationId && !args.file ? await activeContextOf(this.host) : undefined;
+            const operation = args.operationId ? requireManagedBuild(args.operationId)
+                : active?.solutionFile ? managedBuilds.latest(args.target ?? active.targetType, active.solutionFile) : undefined;
+            if (operation) {
+                if (args.target && args.target !== operation.target && !operation.target.startsWith(`${args.target}@`)) {
+                    throw new ToolError('INVALID_ARGUMENT', `Operation ${operation.id} belongs to target '${operation.target}'.`);
+                }
+                const heading = managedBuildReply(operation).text.split('Original output (bounded tail):')[0];
+                if (!operation.result || !fs.existsSync(operation.result.logFile.fsPath)) {
+                    return managedBuildReply(operation).text;
+                }
+                const summary = readBuildLog(operation.result.logFile.fsPath);
+                summary.status = operation.result.status;
+                summary.ok = operation.result.status === 'success';
+                return renderDiagnostics({ summary, limit: Math.min(Math.max(args.limit ?? 20, 1), 200),
+                    ctxLine: heading, candidates: [summary.file], root: this.root(), maxChars: args.maxChars });
+            }
             let ctxLine: string | undefined;
             let candidates: string[] = [];
             let images: ImageArtifacts[] = [];

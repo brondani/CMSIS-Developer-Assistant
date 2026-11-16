@@ -59,6 +59,20 @@ suite('buildInfo/buildLog', () => {
         assert.deepStrictEqual([s.errors, s.warnings, s.notes, s.diagnostics.length], [10, 7, 1, 17]);
     });
 
+    test('managed Windows terminal logs: OSC titles, private CSI and wrapped diagnostic repaint', () => {
+        const text = '\x1b[?9001h\x1b]0;build\x07\x1b[1mD:/long/workspace\x1b[13;1H\x1b[22m\n'
+            + '\x1b[1m\x1b[12;88He/main.c:6:2:\x1b[22m \x1b[31merror: \x1b[m#error INTENTIONAL\x1b[13;1H\x1b[?25h\n'
+            + '\x1b[12;88HL_FAILURE\r\x1b[?25h\n'
+            + 'D:/long/workspace/main.c:7:2: warning: another diagnostic\r\n';
+        const summary = parseBuildLog(text, 'original.log');
+        assert.strictEqual(summary.sizeBytes, Buffer.byteLength(text));
+        assert.deepStrictEqual(summary.diagnostics.map(d => [d.file, d.line, d.message]), [
+            ['D:/long/workspace/main.c', 6, '#error INTENTIONAL_FAILURE'],
+            ['D:/long/workspace/main.c', 7, 'another diagnostic'],
+        ]);
+        assert.deepStrictEqual([summary.errors, summary.warnings], [1, 1]);
+    });
+
     test('a clean build', () => {
         const s = readBuildLog(path.join(BUILDINFO_FIXTURES, 'build-ok.log'));
         assert.strictEqual(s.ok, true);

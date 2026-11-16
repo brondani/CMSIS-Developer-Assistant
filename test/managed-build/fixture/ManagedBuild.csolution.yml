@@ -1,0 +1,16 @@
+﻿# Copyright 2026 Arm Limited
+# SPDX-License-Identifier: Apache-2.0
+solution:
+  compiler: GCC
+  packs:
+    - pack: ARM::CMSIS
+    - pack: ARM::Cortex_DFP
+  target-types:
+    - type: CM3
+      device: ARMCM3
+  build-types:
+    - type: Debug
+      debug: on
+      optimize: none
+  projects:
+    - project: ManagedBuild.cproject.yml

@@ -116,6 +116,8 @@ import {
     SOLUTION_EXTENSION_ID,
 } from '../core/bootstrapState';
 import { currentCallContext } from '../core/callContext';
+import { managedBuilds } from '../core/managedBuilds';
+import { managedBuildApi, managedBuildReply, requireManagedBuild, submitManagedBuild } from './managedBuild';
 import { failedResponseMessage } from '../core/problemFeed';
 import type { ProblemJournal } from '../core/problemJournal';
 import { activeTargetSetOf, solutionAnswerOf } from '../core/solutionAnswers';
@@ -1525,12 +1527,33 @@ export async function runCmsisAction(
     client?: string,
     pack?: string,
     creation?: CreateRequest,
+    operationId?: string,
 ): Promise<ToolText> {
     const { executor, host } = context;
     const deadline = host.now() + waitMs;
+    const managedWait = (): number => Math.max(0, deadline - host.now() - Math.min(DEADLINE_MARGIN_MS, waitMs / 4));
     const tracker = host.cmsisJobs();
-    if (action === 'status') {
-        return reportStatus(context, deadline);
+    if (operationId && action !== 'status' && action !== 'stop_build') {
+        throw new ToolError('INVALID_ARGUMENT', 'operationId is only valid for status and stop_build.');
+    }
+    if (action === 'status' || action === 'stop_build') {
+        const current = !operationId && action === 'status' ? await activeSolution() : undefined;
+        const entry = operationId ? requireManagedBuild(operationId)
+            : managedBuilds.pending() ?? (action === 'status' && current?.solutionPath
+                ? managedBuilds.latest(target ?? await activeTargetName(), current.solutionPath) : undefined);
+        if (entry) {
+            if (target && (!parseTargetRef(target) || !targetMatches(entry.target, parseTargetRef(target)!))) {
+                throw new ToolError('INVALID_ARGUMENT', `Operation ${entry.id} belongs to target '${entry.target}', not '${target}'.`);
+            }
+            if (action === 'stop_build') { managedBuilds.cancel(entry); }
+            await managedBuilds.wait(entry, managedWait(), host);
+            return managedBuildReply(entry);
+        }
+        if (action === 'status') { return reportStatus(context, deadline); }
+    }
+    const pending = managedBuilds.pending();
+    if (pending && !isBuildAction(action)) {
+        throw new ToolError('TASK_FAILED', `Build operation ${pending.id} is pending; use status or stop_build with its operationId before changing the solution or running another CMSIS action.`);
     }
     if (action === 'open_solution') {
         return openSolution(context, openPath, deadline, client);
@@ -1569,6 +1592,15 @@ export async function runCmsisAction(
         }
     }
 
+    const pendingBuild = managedBuilds.pending();
+    if (pendingBuild && isBuildAction(action)) {
+        if (pendingBuild.action !== action || (wanted && !targetMatches(pendingBuild.target, wanted))
+            || pendingBuild.solution !== solution.solutionPath) {
+            throw new ToolError('TASK_FAILED', `Build operation ${pendingBuild.id} is pending; use status or stop_build with its operationId before submitting another build.`);
+        }
+        await managedBuilds.wait(pendingBuild, managedWait(), host);
+        return managedBuildReply(pendingBuild);
+    }
     const inFlight = TASK_ACTIONS.has(action) ? tracker.inFlight(action as JobAction) : undefined;
     if (inFlight) {
         return attachToJob(context, inFlight, wanted, active, deadline, solution.solutionPath);
@@ -1611,6 +1643,14 @@ export async function runCmsisAction(
     const command = ACTION_COMMANDS.get(action);
     if (command === undefined) {
         throw new ToolError('INVALID_ARGUMENT', `Unknown CMSIS action: ${action}`);
+    }
+
+    if (isBuildAction(action)) {
+        const api = await managedBuildApi(host.solutionExtension(), host, Math.max(0, deadline - host.now()));
+        if (api) {
+            return submitManagedBuild(api, action, solution.solutionPath ?? '', active ?? '', context.journal,
+                managedWait(), host);
+        }
     }
 
     // The label pre-check: a task the debugger adapter does not offer is refused before anything runs.
